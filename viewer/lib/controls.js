@@ -16,6 +16,16 @@ const STATE = {
   TOUCH_DOLLY_ROTATE: 6
 }
 
+// Reusable objects to avoid GC pressure in update loop
+const _offset = new THREE.Vector3()
+const _quat = new THREE.Quaternion()
+const _quatInverse = new THREE.Quaternion()
+const _lastPosition = new THREE.Vector3()
+const _lastQuaternion = new THREE.Quaternion()
+const _panLeftV = new THREE.Vector3()
+const _panUpV = new THREE.Vector3()
+const _panOffset = new THREE.Vector3()
+
 class MapControls {
   constructor(camera, domElement) {
     this.enabled = true
@@ -180,25 +190,21 @@ class MapControls {
       this.tickControls()
     }
 
-    var offset = new THREE.Vector3()
-
+    // Use reusable objects to avoid GC pressure
     // so camera.up is the orbit axis
-    var quat = new THREE.Quaternion().setFromUnitVectors(this.object.up, new THREE.Vector3(0, 1, 0))
-    var quatInverse = quat.clone().invert()
-
-    var lastPosition = new THREE.Vector3()
-    var lastQuaternion = new THREE.Quaternion()
+    _quat.setFromUnitVectors(this.object.up, new THREE.Vector3(0, 1, 0))
+    _quatInverse.copy(_quat).invert()
 
     var twoPI = 2 * Math.PI
 
     var position = this.object.position
-    offset.copy(position).sub(this.target)
+    _offset.copy(position).sub(this.target)
 
     // rotate offset to "y-axis-is-up" space
-    offset.applyQuaternion(quat)
+    _offset.applyQuaternion(_quat)
 
     // angle from z-axis around y-axis
-    this.spherical.setFromVector3(offset)
+    this.spherical.setFromVector3(_offset)
 
     if (this.autoRotate && this.state === STATE.NONE) {
       this.rotateLeft(this.getAutoRotationAngle())
@@ -243,12 +249,12 @@ class MapControls {
       this.target.add(this.panOffset)
     }
 
-    offset.setFromSpherical(this.spherical)
+    _offset.setFromSpherical(this.spherical)
 
     // rotate offset back to "camera-up-vector-is-up" space
-    offset.applyQuaternion(quatInverse)
+    _offset.applyQuaternion(_quatInverse)
 
-    position.copy(this.target).add(offset)
+    position.copy(this.target).add(_offset)
 
     this.object.lookAt(this.target)
 
@@ -268,13 +274,13 @@ class MapControls {
     // using small-angle approximation cos(x/2) = 1 - x^2 / 8
 
     if (this.zoomChanged ||
-      lastPosition.distanceToSquared(this.object.position) > this.EPS ||
-      8 * (1 - lastQuaternion.dot(this.object.quaternion)) > this.EPS) {
+      _lastPosition.distanceToSquared(this.object.position) > this.EPS ||
+      8 * (1 - _lastQuaternion.dot(this.object.quaternion)) > this.EPS) {
 
       this.dispatchEvent(this.changeEvent)
 
-      lastPosition.copy(this.object.position)
-      lastQuaternion.copy(this.object.quaternion)
+      _lastPosition.copy(this.object.position)
+      _lastQuaternion.copy(this.object.quaternion)
       this.zoomChanged = false
 
       return true
@@ -303,27 +309,25 @@ class MapControls {
   }
 
   panLeft(distance, objectMatrix) {
-    let v = new THREE.Vector3()
+    // Reuse vector to avoid GC pressure
+    _panLeftV.setFromMatrixColumn(objectMatrix, 0) // get X column of objectMatrix
+    _panLeftV.multiplyScalar(- distance)
 
-    v.setFromMatrixColumn(objectMatrix, 0) // get X column of objectMatrix
-    v.multiplyScalar(- distance)
-
-    this.panOffset.add(v)
+    this.panOffset.add(_panLeftV)
   }
 
   panUp(distance, objectMatrix) {
-    let v = new THREE.Vector3()
-
+    // Reuse vector to avoid GC pressure
     if (this.screenSpacePanning === true) {
-      v.setFromMatrixColumn(objectMatrix, 1)
+      _panUpV.setFromMatrixColumn(objectMatrix, 1)
     } else {
-      v.setFromMatrixColumn(objectMatrix, 0)
-      v.crossVectors(this.object.up, v)
+      _panUpV.setFromMatrixColumn(objectMatrix, 0)
+      _panUpV.crossVectors(this.object.up, _panUpV)
     }
 
-    v.multiplyScalar(distance)
+    _panUpV.multiplyScalar(distance)
 
-    this.panOffset.add(v)
+    this.panOffset.add(_panUpV)
   }
 
   // Patch - translate Y
@@ -333,13 +337,12 @@ class MapControls {
 
   // deltaX and deltaY are in pixels; right and down are positive
   pan(deltaX, deltaY, distance) {
-    let offset = new THREE.Vector3()
-
+    // Reuse vector to avoid GC pressure
     if (this.object.isPerspectiveCamera) {
       // perspective
       var position = this.object.position
-      offset.copy(position).sub(this.target)
-      var targetDistance = offset.length()
+      _panOffset.copy(position).sub(this.target)
+      var targetDistance = _panOffset.length()
 
       // half of the fov is center to top of screen
       targetDistance *= Math.tan((this.object.fov / 2) * Math.PI / 180.0)
@@ -913,6 +916,21 @@ class MapControls {
     this.element.ownerDocument.removeEventListener('keydown', this.onKeyDown, false, {passive: true})
     this.element.ownerDocument.removeEventListener('keyup', this.onKeyUp, false, {passive: true})
     console.log('[controls] unregistered handlers', this.element)
+  }
+
+  /**
+   * Fully dispose of the controls
+   * Call this when the controls are no longer needed
+   */
+  dispose() {
+    this.enabled = false
+    this.unregisterHandlers()
+
+    // Clear references
+    this.object = null
+    this.element = null
+    this.target = null
+    this.keyDowns = []
   }
 
   dispatchEvent() {

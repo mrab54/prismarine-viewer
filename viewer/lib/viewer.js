@@ -5,6 +5,15 @@ const { Entities } = require('./entities')
 const { Primitives } = require('./primitives')
 const { getVersion } = require('./version')
 const { Vec3 } = require('vec3')
+const {
+  PLAYER_HEIGHT,
+  TWEEN_DURATION_MS,
+  SNEAK_HEIGHT_OFFSET
+} = require('./constants')
+
+// Reusable objects for raycasting to avoid GC pressure
+const _raycaster = new THREE.Raycaster()
+const _mouse = new THREE.Vector2()
 
 class Viewer {
   constructor (renderer) {
@@ -27,14 +36,75 @@ class Viewer {
     this.primitives = new Primitives(this.scene, this.camera)
 
     this.domElement = renderer.domElement
-    this.playerHeight = 1.6
+    this.playerHeight = PLAYER_HEIGHT
     this.isSneaking = false
+
+    // Track active tweens to prevent memory leaks
+    this.cameraTween = null
+
+    // Performance settings
+    this.enableFrustumCulling = true
   }
 
   resetAll () {
+    // Stop any active camera tween
+    if (this.cameraTween) {
+      this.cameraTween.stop()
+      this.cameraTween = null
+    }
+
     this.world.resetWorld()
     this.entities.clear()
     this.primitives.clear()
+  }
+
+  /**
+   * Fully dispose of all resources
+   * Call this when the viewer is no longer needed
+   */
+  dispose () {
+    // Stop camera tween
+    if (this.cameraTween) {
+      this.cameraTween.stop()
+      this.cameraTween = null
+    }
+
+    // Dispose world renderer (includes workers)
+    if (this.world) {
+      this.world.dispose()
+      this.world = null
+    }
+
+    // Clear entities
+    if (this.entities) {
+      this.entities.clear()
+      this.entities = null
+    }
+
+    // Clear primitives
+    if (this.primitives) {
+      this.primitives.clear()
+      this.primitives = null
+    }
+
+    // Dispose lights
+    if (this.ambientLight) {
+      this.scene.remove(this.ambientLight)
+      this.ambientLight = null
+    }
+
+    if (this.directionalLight) {
+      this.scene.remove(this.directionalLight)
+      this.directionalLight = null
+    }
+
+    // Clear scene background
+    if (this.scene.background) {
+      this.scene.background = null
+    }
+
+    // Note: camera and scene are typically owned by the renderer
+    // and should be disposed there if needed
   }
 
   setVersion (version) {
@@ -76,8 +146,16 @@ class Viewer {
   setFirstPersonCamera (pos, yaw, pitch) {
     if (pos) {
       let y = pos.y + this.playerHeight
-      if (this.isSneaking) y -= 0.3
-      new TWEEN.Tween(this.camera.position).to({ x: pos.x, y, z: pos.z }, 50).start()
+      if (this.isSneaking) y -= SNEAK_HEIGHT_OFFSET
+
+      // Stop previous camera tween to prevent memory leak
+      if (this.cameraTween) {
+        this.cameraTween.stop()
+      }
+
+      this.cameraTween = new TWEEN.Tween(this.camera.position)
+        .to({ x: pos.x, y, z: pos.z }, TWEEN_DURATION_MS)
+        .start()
     }
     this.camera.rotation.set(pitch, yaw, 0, 'ZYX')
   }
@@ -104,18 +182,51 @@ class Viewer {
     })
 
     this.domElement.addEventListener('pointerdown', (evt) => {
-      const raycaster = new THREE.Raycaster()
-      const mouse = new THREE.Vector2()
-      mouse.x = (evt.clientX / this.domElement.clientWidth) * 2 - 1
-      mouse.y = -(evt.clientY / this.domElement.clientHeight) * 2 + 1
-      raycaster.setFromCamera(mouse, this.camera)
-      const ray = raycaster.ray
+      // Reuse raycaster and mouse vector to avoid GC pressure
+      _mouse.x = (evt.clientX / this.domElement.clientWidth) * 2 - 1
+      _mouse.y = -(evt.clientY / this.domElement.clientHeight) * 2 + 1
+      _raycaster.setFromCamera(_mouse, this.camera)
+      const ray = _raycaster.ray
       emitter.emit('mouseClick', { origin: ray.origin, direction: ray.direction, button: evt.button })
     })
   }
 
+  /**
+   * Update loop - call once per frame
+   */
   update () {
     TWEEN.update()
+
+    // Update frustum culling
+    if (this.enableFrustumCulling && this.world) {
+      this.world.updateFrustumCulling(this.camera)
+    }
+
+    // Clear pending dirty sections at end of frame
+    if (this.world) {
+      this.world.clearPendingDirtySections()
+    }
+  }
+
+  /**
+   * Enable or disable frustum culling
+   * @param {boolean} enabled - Whether to enable frustum culling
+   */
+  setFrustumCulling (enabled) {
+    this.enableFrustumCulling = enabled
+    if (this.world) {
+      this.world.setFrustumCulling(enabled)
+    }
+  }
+
+  /**
+   * Get performance statistics
+   */
+  getStats () {
+    return {
+      world: this.world ? this.world.getStats() : null,
+      frustumCullingEnabled: this.enableFrustumCulling
+    }
   }
 
   async waitForChunksToRender () {

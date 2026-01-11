@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "jestTest": "jest --verbose --runInBand --forceExit",
-    "test": "npm run test",
+    "test": "npm run test:unit && npm run jestTest",
+    "test:unit": "jest --config jest.unit.config.js --verbose",
+    "test:unit:coverage": "jest --config jest.unit.config.js --coverage",
+    "test:e2e": "jest --verbose --runInBand --forceExit",
     "pretest": "npm run lint",
     "lint": "standard",
     "prepare": "node viewer/prerender.js && webpack",

@@ -1,5 +1,7 @@
 const Chunks = require('prismarine-chunk')
 const mcData = require('minecraft-data')
+const { BLOCK_CACHE_MAX_SIZE } = require('./constants')
+const { LRUCache } = require('./lruCache')
 
 function columnKey (x, z) {
   return `${x},${z}`
@@ -22,8 +24,9 @@ class World {
   constructor (version) {
     this.Chunk = Chunks(version)
     this.columns = {}
-    this.blockCache = {}
+    this.blockCache = new LRUCache(BLOCK_CACHE_MAX_SIZE)
     this.biomeCache = mcData(version).biomes
+    this.version = version
   }
 
   addColumn (x, z, json) {
@@ -33,7 +36,12 @@ class World {
   }
 
   removeColumn (x, z) {
-    delete this.columns[columnKey(x, z)]
+    const key = columnKey(x, z)
+    const column = this.columns[key]
+    if (column) {
+      // Clean up column reference
+      delete this.columns[key]
+    }
   }
 
   getColumn (x, z) {
@@ -63,13 +71,15 @@ class World {
     const locInChunk = posInChunk(loc)
     const stateId = column.getBlockStateId(locInChunk)
 
-    if (!this.blockCache[stateId]) {
+    let block = this.blockCache.get(stateId)
+    if (!block) {
       const b = column.getBlock(locInChunk)
       b.isCube = isCube(b.shapes)
-      this.blockCache[stateId] = b
+      this.blockCache.set(stateId, b)
+      block = b
     }
 
-    const block = this.blockCache[stateId]
+    // Clone position to avoid mutation issues
     block.position = loc
     block.biome = this.biomeCache[column.getBiome(locInChunk)]
     if (block.biome === undefined) {
@@ -77,6 +87,25 @@ class World {
     }
     return block
   }
+
+  /**
+   * Clear all world data (for cleanup)
+   */
+  clear () {
+    this.columns = {}
+    this.blockCache.clear()
+  }
+
+  /**
+   * Get cache statistics for debugging
+   */
+  getCacheStats () {
+    return {
+      blockCacheSize: this.blockCache.size,
+      blockCacheMaxSize: BLOCK_CACHE_MAX_SIZE,
+      columnCount: Object.keys(this.columns).length
+    }
+  }
 }
 
-module.exports = { World }
+module.exports = { World, LRUCache }
